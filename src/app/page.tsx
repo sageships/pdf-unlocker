@@ -9,8 +9,11 @@ export default function Home() {
   const [fileName, setFileName] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [password, setPassword] = useState('');
+  const [showPasswordInput, setShowPasswordInput] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
 
-  const unlockPdf = async (file: File) => {
+  const unlockPdf = async (file: File, pwd?: string) => {
     setIsProcessing(true);
     setError('');
     setSuccess(false);
@@ -19,20 +22,38 @@ export default function Home() {
     try {
       const arrayBuffer = await file.arrayBuffer();
       
-      // Load the PDF (this will fail if it's password-protected for opening)
-      const pdfDoc = await PDFDocument.load(arrayBuffer, {
-        ignoreEncryption: true,
-      });
+      // Try to load the PDF with password if provided
+      const loadOptions: { password?: string; ignoreEncryption?: boolean } = {};
+      if (pwd) {
+        loadOptions.password = pwd;
+      }
+      loadOptions.ignoreEncryption = true;
 
-      // Create a new PDF without restrictions
+      let pdfDoc;
+      try {
+        pdfDoc = await PDFDocument.load(arrayBuffer, loadOptions);
+      } catch (loadError: unknown) {
+        // If it fails, might need a password
+        const errorMessage = loadError instanceof Error ? loadError.message : String(loadError);
+        if (errorMessage.includes('password') || errorMessage.includes('encrypted')) {
+          setPendingFile(file);
+          setShowPasswordInput(true);
+          setIsProcessing(false);
+          setError('This PDF is password-protected. Please enter the password below.');
+          return;
+        }
+        throw loadError;
+      }
+
+      // Create a new PDF without restrictions/password
       const unlockedPdf = await PDFDocument.create();
       const pages = await unlockedPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
       pages.forEach((page) => unlockedPdf.addPage(page));
 
-      // Save the unlocked PDF
+      // Save the unlocked PDF (without encryption)
       const pdfBytes = await unlockedPdf.save();
       
-      // Download - convert to ArrayBuffer for TypeScript compatibility
+      // Download
       const pdfBuffer = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer;
       const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
@@ -45,9 +66,17 @@ export default function Home() {
       URL.revokeObjectURL(url);
       
       setSuccess(true);
+      setShowPasswordInput(false);
+      setPendingFile(null);
+      setPassword('');
     } catch (err) {
       console.error(err);
-      setError('Failed to unlock PDF. It might be password-protected for opening (not just editing). Try a different tool for password-protected PDFs.');
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (errorMessage.includes('password') || errorMessage.includes('incorrect')) {
+        setError('Incorrect password. Please try again.');
+      } else {
+        setError('Failed to unlock PDF. The file might be corrupted or use unsupported encryption.');
+      }
     } finally {
       setIsProcessing(false);
     }
@@ -56,6 +85,8 @@ export default function Home() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    setShowPasswordInput(false);
+    setPassword('');
     
     const file = e.dataTransfer.files[0];
     if (file && file.type === 'application/pdf') {
@@ -66,9 +97,18 @@ export default function Home() {
   }, []);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setShowPasswordInput(false);
+    setPassword('');
     const file = e.target.files?.[0];
     if (file) {
       unlockPdf(file);
+    }
+  };
+
+  const handlePasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pendingFile && password) {
+      unlockPdf(pendingFile, password);
     }
   };
 
@@ -80,7 +120,7 @@ export default function Home() {
             🔓 PDF Unlocker
           </h1>
           <p className="text-gray-400">
-            Remove editing restrictions from your PDFs instantly
+            Remove passwords & restrictions from your PDFs
           </p>
         </div>
 
@@ -96,7 +136,7 @@ export default function Home() {
           onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          onClick={() => document.getElementById('fileInput')?.click()}
+          onClick={() => !showPasswordInput && document.getElementById('fileInput')?.click()}
         >
           <input
             id="fileInput"
@@ -125,6 +165,31 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {showPasswordInput && (
+          <form onSubmit={handlePasswordSubmit} className="mt-4 p-4 bg-white/5 border border-gray-600 rounded-xl">
+            <label className="block text-gray-300 mb-2">
+              🔑 Enter PDF Password:
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Password"
+                className="flex-1 px-4 py-3 bg-white/10 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                autoFocus
+              />
+              <button
+                type="submit"
+                disabled={!password || isProcessing}
+                className="px-6 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-white font-medium transition-colors"
+              >
+                Unlock
+              </button>
+            </div>
+          </form>
+        )}
 
         {error && (
           <div className="mt-4 p-4 bg-red-500/20 border border-red-500/50 rounded-xl text-red-300">
