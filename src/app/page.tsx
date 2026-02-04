@@ -1,13 +1,10 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { PDFDocument } from 'pdf-lib';
-import * as pdfjsLib from 'pdfjs-dist';
 
-// Set worker
-if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-}
+// Dynamically import pdfjs only on client
+let pdfjsLib: typeof import('pdfjs-dist') | null = null;
 
 export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
@@ -18,6 +15,16 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pdfjsReady, setPdfjsReady] = useState(false);
+
+  useEffect(() => {
+    // Load pdfjs only on client side
+    import('pdfjs-dist/legacy/build/pdf.mjs').then((pdfjs) => {
+      pdfjsLib = pdfjs;
+      pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+      setPdfjsReady(true);
+    });
+  }, []);
 
   const unlockPdf = async (file: File, pwd?: string) => {
     setIsProcessing(true);
@@ -49,6 +56,12 @@ export default function Home() {
       }
 
       // Fallback: Use PDF.js to decrypt
+      if (!pdfjsLib) {
+        setError('PDF.js is still loading. Please try again.');
+        setIsProcessing(false);
+        return;
+      }
+
       const loadingTask = pdfjsLib.getDocument({
         data: arrayBuffer,
         password: pwd || undefined,
@@ -72,11 +85,11 @@ export default function Home() {
           canvas.width = viewport.width;
           
           // Render page to canvas
-          await page.render({
+          const renderContext = {
             canvasContext: context,
             viewport: viewport,
-            canvas: canvas,
-          } as Parameters<typeof page.render>[0]).promise;
+          };
+          await page.render(renderContext).promise;
           
           // Convert canvas to PNG and embed in new PDF
           const pngDataUrl = canvas.toDataURL('image/png');
@@ -152,7 +165,7 @@ export default function Home() {
     } else {
       setError('Please upload a PDF file');
     }
-  }, []);
+  }, [pdfjsReady]);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     resetState();
