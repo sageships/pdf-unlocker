@@ -75,7 +75,8 @@ export default function Home() {
           await page.render({
             canvasContext: context,
             viewport: viewport,
-          }).promise;
+            canvas: canvas,
+          } as Parameters<typeof page.render>[0]).promise;
           
           // Convert canvas to PNG and embed in new PDF
           const pngDataUrl = canvas.toDataURL('image/png');
