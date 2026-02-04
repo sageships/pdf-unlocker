@@ -2,6 +2,12 @@
 
 import { useState, useCallback } from 'react';
 import { PDFDocument } from 'pdf-lib';
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Set worker
+if (typeof window !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+}
 
 export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
@@ -22,71 +28,123 @@ export default function Home() {
     try {
       const arrayBuffer = await file.arrayBuffer();
       
-      // Try to load the PDF with password if provided
-      const loadOptions: { password?: string; ignoreEncryption?: boolean } = {};
-      if (pwd) {
-        loadOptions.password = pwd;
-      }
-      loadOptions.ignoreEncryption = true;
-
-      let pdfDoc;
+      // First try with pdf-lib (works for restriction-only PDFs)
       try {
-        pdfDoc = await PDFDocument.load(arrayBuffer, loadOptions);
-      } catch (loadError: unknown) {
-        // If it fails, might need a password
-        const errorMessage = loadError instanceof Error ? loadError.message : String(loadError);
-        if (errorMessage.includes('password') || errorMessage.includes('encrypted')) {
-          setPendingFile(file);
-          setShowPasswordInput(true);
-          setIsProcessing(false);
-          setError('This PDF is password-protected. Please enter the password below.');
-          return;
-        }
-        throw loadError;
+        const pdfDoc = await PDFDocument.load(arrayBuffer, { 
+          password: pwd,
+          ignoreEncryption: true 
+        });
+        
+        // Create a new PDF without restrictions
+        const unlockedPdf = await PDFDocument.create();
+        const pages = await unlockedPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
+        pages.forEach((page) => unlockedPdf.addPage(page));
+
+        const pdfBytes = await unlockedPdf.save();
+        downloadPdf(pdfBytes, file.name);
+        setSuccess(true);
+        resetState();
+        return;
+      } catch (pdfLibError) {
+        console.log('pdf-lib failed, trying pdfjs:', pdfLibError);
       }
 
-      // Create a new PDF without restrictions/password
-      const unlockedPdf = await PDFDocument.create();
-      const pages = await unlockedPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
-      pages.forEach((page) => unlockedPdf.addPage(page));
+      // Fallback: Use PDF.js to decrypt
+      const loadingTask = pdfjsLib.getDocument({
+        data: arrayBuffer,
+        password: pwd || undefined,
+      });
 
-      // Save the unlocked PDF (without encryption)
-      const pdfBytes = await unlockedPdf.save();
+      try {
+        const pdfDocument = await loadingTask.promise;
+        
+        // Create new PDF with pdf-lib
+        const newPdf = await PDFDocument.create();
+        
+        // Get each page and add to new document
+        for (let i = 1; i <= pdfDocument.numPages; i++) {
+          const page = await pdfDocument.getPage(i);
+          const viewport = page.getViewport({ scale: 2 });
+          
+          // Create canvas
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d')!;
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          
+          // Render page to canvas
+          await page.render({
+            canvasContext: context,
+            viewport: viewport,
+          }).promise;
+          
+          // Convert canvas to PNG and embed in new PDF
+          const pngDataUrl = canvas.toDataURL('image/png');
+          const pngData = await fetch(pngDataUrl).then(r => r.arrayBuffer());
+          const pngImage = await newPdf.embedPng(pngData);
+          
+          const newPage = newPdf.addPage([viewport.width / 2, viewport.height / 2]);
+          newPage.drawImage(pngImage, {
+            x: 0,
+            y: 0,
+            width: viewport.width / 2,
+            height: viewport.height / 2,
+          });
+        }
+        
+        const pdfBytes = await newPdf.save();
+        downloadPdf(pdfBytes, file.name);
+        setSuccess(true);
+        resetState();
+        
+      } catch (pdfJsError: unknown) {
+        const errorMsg = pdfJsError instanceof Error ? pdfJsError.message : String(pdfJsError);
+        
+        if (errorMsg.includes('password') || errorMsg.includes('Password')) {
+          if (!pwd) {
+            setPendingFile(file);
+            setShowPasswordInput(true);
+            setError('This PDF requires a password. Please enter it below.');
+          } else {
+            setError('Incorrect password. Please try again.');
+          }
+        } else {
+          setError(`Failed to process PDF: ${errorMsg}`);
+        }
+      }
       
-      // Download
-      const pdfBuffer = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer;
-      const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name.replace('.pdf', '_unlocked.pdf');
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      setSuccess(true);
-      setShowPasswordInput(false);
-      setPendingFile(null);
-      setPassword('');
     } catch (err) {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : String(err);
-      if (errorMessage.includes('password') || errorMessage.includes('incorrect')) {
-        setError('Incorrect password. Please try again.');
-      } else {
-        setError('Failed to unlock PDF. The file might be corrupted or use unsupported encryption.');
-      }
+      setError(`Error: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
     }
   };
 
+  const downloadPdf = (pdfBytes: Uint8Array, originalName: string) => {
+    const pdfBuffer = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer;
+    const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = originalName.replace('.pdf', '_unlocked.pdf');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const resetState = () => {
+    setShowPasswordInput(false);
+    setPendingFile(null);
+    setPassword('');
+  };
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    setShowPasswordInput(false);
-    setPassword('');
+    resetState();
     
     const file = e.dataTransfer.files[0];
     if (file && file.type === 'application/pdf') {
@@ -97,8 +155,7 @@ export default function Home() {
   }, []);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setShowPasswordInput(false);
-    setPassword('');
+    resetState();
     const file = e.target.files?.[0];
     if (file) {
       unlockPdf(file);
@@ -149,7 +206,8 @@ export default function Home() {
           {isProcessing ? (
             <div className="space-y-4">
               <div className="animate-spin w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full mx-auto"></div>
-              <p className="text-gray-300">Unlocking {fileName}...</p>
+              <p className="text-gray-300">Processing {fileName}...</p>
+              <p className="text-gray-500 text-sm">This may take a moment for large files</p>
             </div>
           ) : (
             <div className="space-y-4">
