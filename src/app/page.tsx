@@ -53,27 +53,20 @@ export default function Home() {
         const errMsg = pdfLibError instanceof Error ? pdfLibError.message : String(pdfLibError);
         console.log('pdf-lib error:', errMsg);
         
-        // Check if it's a password-related error
+        // Check if it's encryption-related
         if (errMsg.toLowerCase().includes('password') || 
             errMsg.toLowerCase().includes('encrypt') ||
-            errMsg.toLowerCase().includes('decrypt')) {
-          if (!pwd) {
-            setPendingFile(file);
-            setShowPasswordInput(true);
-            setError('This PDF is password-protected. Please enter the password below.');
-            setIsProcessing(false);
-            setStatus('');
-            return;
-          } else {
-            setError('Incorrect password or unsupported encryption. pdf-lib cannot decrypt password-protected PDFs. Try using Adobe Acrobat or an online service like ilovepdf.com');
-            setIsProcessing(false);
-            setStatus('');
-            return;
-          }
+            errMsg.toLowerCase().includes('decrypt') ||
+            errMsg.toLowerCase().includes('expected instance') ||
+            errMsg.toLowerCase().includes('undefined')) {
+          setError('This PDF is encrypted with a method that cannot be processed in the browser. Please use ilovepdf.com/unlock_pdf instead.');
+          setIsProcessing(false);
+          setStatus('');
+          return;
         }
         
         // For other errors, show them
-        setError(`Failed to unlock PDF: ${errMsg}`);
+        setError(`Failed to process PDF: ${errMsg}. Try ilovepdf.com/unlock_pdf instead.`);
       }
       
     } catch (err) {
