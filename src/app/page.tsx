@@ -1,10 +1,7 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { PDFDocument } from 'pdf-lib';
-
-// Dynamically import pdfjs only on client
-let pdfjsLib: typeof import('pdfjs-dist') | null = null;
 
 export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
@@ -15,112 +12,68 @@ export default function Home() {
   const [password, setPassword] = useState('');
   const [showPasswordInput, setShowPasswordInput] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [pdfjsReady, setPdfjsReady] = useState(false);
-
-  useEffect(() => {
-    // Load pdfjs only on client side
-    import('pdfjs-dist/legacy/build/pdf.mjs').then((pdfjs) => {
-      pdfjsLib = pdfjs;
-      pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
-      setPdfjsReady(true);
-    });
-  }, []);
+  const [status, setStatus] = useState('');
 
   const unlockPdf = async (file: File, pwd?: string) => {
     setIsProcessing(true);
     setError('');
     setSuccess(false);
     setFileName(file.name);
+    setStatus('Reading file...');
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      setStatus('Processing PDF...');
       
-      // First try with pdf-lib (works for restriction-only PDFs)
+      // Try with pdf-lib first (handles restriction-only PDFs)
       try {
         const pdfDoc = await PDFDocument.load(arrayBuffer, { 
           ignoreEncryption: true 
         });
         
-        // Create a new PDF without restrictions
+        setStatus('Creating unlocked copy...');
         const unlockedPdf = await PDFDocument.create();
-        const pages = await unlockedPdf.copyPages(pdfDoc, pdfDoc.getPageIndices());
+        const pageIndices = pdfDoc.getPageIndices();
+        
+        if (pageIndices.length === 0) {
+          throw new Error('PDF has no pages or could not be read');
+        }
+        
+        const pages = await unlockedPdf.copyPages(pdfDoc, pageIndices);
         pages.forEach((page) => unlockedPdf.addPage(page));
 
+        setStatus('Saving...');
         const pdfBytes = await unlockedPdf.save();
         downloadPdf(pdfBytes, file.name);
         setSuccess(true);
         resetState();
+        setStatus('');
         return;
-      } catch (pdfLibError) {
-        console.log('pdf-lib failed, trying pdfjs:', pdfLibError);
-      }
-
-      // Fallback: Use PDF.js to decrypt
-      if (!pdfjsLib) {
-        setError('PDF.js is still loading. Please try again.');
-        setIsProcessing(false);
-        return;
-      }
-
-      const loadingTask = pdfjsLib.getDocument({
-        data: arrayBuffer,
-        password: pwd || undefined,
-      });
-
-      try {
-        const pdfDocument = await loadingTask.promise;
+      } catch (pdfLibError: unknown) {
+        const errMsg = pdfLibError instanceof Error ? pdfLibError.message : String(pdfLibError);
+        console.log('pdf-lib error:', errMsg);
         
-        // Create new PDF with pdf-lib
-        const newPdf = await PDFDocument.create();
-        
-        // Get each page and add to new document
-        for (let i = 1; i <= pdfDocument.numPages; i++) {
-          const page = await pdfDocument.getPage(i);
-          const viewport = page.getViewport({ scale: 2 });
-          
-          // Create canvas
-          const canvas = document.createElement('canvas');
-          const context = canvas.getContext('2d')!;
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-          
-          // Render page to canvas
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await page.render({ canvasContext: context, viewport } as any).promise;
-          
-          // Convert canvas to PNG and embed in new PDF
-          const pngDataUrl = canvas.toDataURL('image/png');
-          const pngData = await fetch(pngDataUrl).then(r => r.arrayBuffer());
-          const pngImage = await newPdf.embedPng(pngData);
-          
-          const newPage = newPdf.addPage([viewport.width / 2, viewport.height / 2]);
-          newPage.drawImage(pngImage, {
-            x: 0,
-            y: 0,
-            width: viewport.width / 2,
-            height: viewport.height / 2,
-          });
-        }
-        
-        const pdfBytes = await newPdf.save();
-        downloadPdf(pdfBytes, file.name);
-        setSuccess(true);
-        resetState();
-        
-      } catch (pdfJsError: unknown) {
-        const errorMsg = pdfJsError instanceof Error ? pdfJsError.message : String(pdfJsError);
-        
-        if (errorMsg.includes('password') || errorMsg.includes('Password')) {
+        // Check if it's a password-related error
+        if (errMsg.toLowerCase().includes('password') || 
+            errMsg.toLowerCase().includes('encrypt') ||
+            errMsg.toLowerCase().includes('decrypt')) {
           if (!pwd) {
             setPendingFile(file);
             setShowPasswordInput(true);
-            setError('This PDF requires a password. Please enter it below.');
+            setError('This PDF is password-protected. Please enter the password below.');
+            setIsProcessing(false);
+            setStatus('');
+            return;
           } else {
-            setError('Incorrect password. Please try again.');
+            setError('Incorrect password or unsupported encryption. pdf-lib cannot decrypt password-protected PDFs. Try using Adobe Acrobat or an online service like ilovepdf.com');
+            setIsProcessing(false);
+            setStatus('');
+            return;
           }
-        } else {
-          setError(`Failed to process PDF: ${errorMsg}`);
         }
+        
+        // For other errors, show them
+        setError(`Failed to unlock PDF: ${errMsg}`);
       }
       
     } catch (err) {
@@ -129,6 +82,7 @@ export default function Home() {
       setError(`Error: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
+      setStatus('');
     }
   };
 
@@ -155,6 +109,7 @@ export default function Home() {
     e.preventDefault();
     setIsDragging(false);
     resetState();
+    setError('');
     
     const file = e.dataTransfer.files[0];
     if (file && file.type === 'application/pdf') {
@@ -162,10 +117,11 @@ export default function Home() {
     } else {
       setError('Please upload a PDF file');
     }
-  }, [pdfjsReady]);
+  }, []);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     resetState();
+    setError('');
     const file = e.target.files?.[0];
     if (file) {
       unlockPdf(file);
@@ -187,7 +143,10 @@ export default function Home() {
             🔓 PDF Unlocker
           </h1>
           <p className="text-gray-400">
-            Remove passwords & restrictions from your PDFs
+            Remove editing/printing restrictions from PDFs
+          </p>
+          <p className="text-gray-500 text-sm mt-1">
+            (For password-protected PDFs, use ilovepdf.com)
           </p>
         </div>
 
@@ -203,7 +162,7 @@ export default function Home() {
           onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          onClick={() => !showPasswordInput && document.getElementById('fileInput')?.click()}
+          onClick={() => !showPasswordInput && !isProcessing && document.getElementById('fileInput')?.click()}
         >
           <input
             id="fileInput"
@@ -216,8 +175,8 @@ export default function Home() {
           {isProcessing ? (
             <div className="space-y-4">
               <div className="animate-spin w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full mx-auto"></div>
-              <p className="text-gray-300">Processing {fileName}...</p>
-              <p className="text-gray-500 text-sm">This may take a moment for large files</p>
+              <p className="text-gray-300">{status || 'Processing...'}</p>
+              <p className="text-gray-500 text-sm">{fileName}</p>
             </div>
           ) : (
             <div className="space-y-4">
@@ -260,7 +219,7 @@ export default function Home() {
         )}
 
         {error && (
-          <div className="mt-4 p-4 bg-red-500/20 border border-red-500/50 rounded-xl text-red-300">
+          <div className="mt-4 p-4 bg-red-500/20 border border-red-500/50 rounded-xl text-red-300 text-sm">
             ⚠️ {error}
           </div>
         )}
@@ -272,11 +231,16 @@ export default function Home() {
         )}
 
         <div className="mt-8 text-center text-gray-500 text-sm">
-          <p>🔒 Your files are processed locally in your browser</p>
+          <p>🔒 Files are processed locally in your browser</p>
           <p className="mt-1">Nothing is uploaded to any server</p>
         </div>
 
-        <footer className="mt-12 text-center text-gray-600 text-sm">
+        <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl text-blue-300 text-sm">
+          <p><strong>Note:</strong> This tool removes editing/copying/printing restrictions.</p>
+          <p className="mt-1">For PDFs that require a password to open, use <a href="https://www.ilovepdf.com/unlock_pdf" target="_blank" rel="noopener" className="underline">ilovepdf.com/unlock_pdf</a></p>
+        </div>
+
+        <footer className="mt-8 text-center text-gray-600 text-sm">
           Built with 🦞 by <a href="https://github.com/sageships" className="text-purple-400 hover:underline">Sage</a>
         </footer>
       </div>
