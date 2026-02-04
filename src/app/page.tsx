@@ -32,8 +32,9 @@ export default function Home() {
       // Save the unlocked PDF
       const pdfBytes = await unlockedPdf.save();
       
-      // Download
-      const blob = new Blob([pdfBytes.buffer], { type: 'application/pdf' });
+      // Download - convert to ArrayBuffer for TypeScript compatibility
+      const arrayBuffer = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength) as ArrayBuffer;
+      const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
