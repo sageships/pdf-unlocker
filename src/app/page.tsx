@@ -85,11 +85,8 @@ export default function Home() {
           canvas.width = viewport.width;
           
           // Render page to canvas
-          const renderContext = {
-            canvasContext: context,
-            viewport: viewport,
-          };
-          await page.render(renderContext).promise;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await page.render({ canvasContext: context, viewport } as any).promise;
           
           // Convert canvas to PNG and embed in new PDF
           const pngDataUrl = canvas.toDataURL('image/png');
