@@ -31,7 +31,6 @@ export default function Home() {
       // First try with pdf-lib (works for restriction-only PDFs)
       try {
         const pdfDoc = await PDFDocument.load(arrayBuffer, { 
-          password: pwd,
           ignoreEncryption: true 
         });
         
